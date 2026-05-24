@@ -861,11 +861,11 @@
             </div>
           `;
         } else if (!isMyTeam) {
-          borderClass = "border-zinc-800/80 bg-zinc-900/50 hover:border-zinc-700 opacity-90";
+          borderClass = "border-amber-500/30 bg-amber-950/20 hover:border-amber-500/50 opacity-95";
           headerHTML = `
             <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-extrabold text-xs text-zinc-400 tracking-wider uppercase">${rowLabel}</span>
-              <span class="px-2 py-0.5 bg-zinc-800 text-zinc-400 border border-zinc-700 rounded-md text-[9px] font-bold">Zespół: ${entry.Team}</span>
+              <span class="font-extrabold text-xs text-amber-500/90 tracking-wider uppercase">${rowLabel}</span>
+              <span class="px-2 py-0.5 bg-amber-900/40 text-amber-400 border border-amber-500/30 rounded-md text-[9px] font-bold">Zespół: ${entry.Team}</span>
             </div>
           `;
         } else if (!hasActiveData) {
@@ -903,7 +903,7 @@
         }
 
         const dis = isMyTeam ? '' : 'disabled';
-        const inpCls = isMyTeam ? 'bg-zinc-900 border-zinc-800 focus:border-emerald-500 text-zinc-200' : 'bg-zinc-900/50 border-zinc-800 text-zinc-500 cursor-not-allowed';
+        const inpCls = isMyTeam ? 'bg-zinc-900 border-zinc-800 focus:border-emerald-500 text-zinc-200' : 'bg-zinc-900/50 border-amber-900/30 text-amber-500/60 cursor-not-allowed';
 
         // Zwykłe onfocus="this.select()" powraca.
         // Formularz nie będzie się przebudowywał podczas wpisywania tekstu,
@@ -931,11 +931,11 @@
             <div class="grid grid-cols-2 gap-3 pt-2 border-t border-zinc-900/60 text-xs font-medium">
               <div class="flex items-center gap-1.5">
                 <span class="text-[9px] text-zinc-500 uppercase">Zużycie:</span>
-                <span id="zuzycie-label-${index}" class="font-extrabold ${isMyTeam ? 'text-emerald-400' : 'text-zinc-500'} text-xs">${entry.Zuzycie.toFixed(2)} m</span>
+                <span id="zuzycie-label-${index}" class="font-extrabold ${isMyTeam ? 'text-emerald-400' : 'text-amber-500/90'} text-xs">${entry.Zuzycie.toFixed(2)} m</span>
               </div>
               <div class="flex items-center gap-1.5 justify-end">
                 <span class="text-[9px] text-zinc-500 uppercase">Zapas:</span>
-                <span id="zapas-label-${index}" class="font-extrabold ${isMyTeam ? 'text-indigo-400' : 'text-zinc-500'} text-xs">${entry.Zapas.toFixed(2)} m</span>
+                <span id="zapas-label-${index}" class="font-extrabold ${isMyTeam ? 'text-indigo-400' : 'text-amber-500/60'} text-xs">${entry.Zapas.toFixed(2)} m</span>
               </div>
             </div>
           `;
@@ -958,7 +958,7 @@
             </div>
             <div class="pt-1.5 border-t border-zinc-900/40 text-right">
               <span class="text-[10px] text-zinc-500">${consumptionLabel}</span>
-              <span id="zuzycie-label-${index}" class="text-xs font-black ${isMyTeam ? 'text-emerald-400' : 'text-zinc-500'} ml-1">${entry.Zuzycie.toFixed(2)} m</span>
+              <span id="zuzycie-label-${index}" class="text-xs font-black ${isMyTeam ? 'text-emerald-400' : 'text-amber-500/90'} ml-1">${entry.Zuzycie.toFixed(2)} m</span>
             </div>
           `;
         }
@@ -1028,6 +1028,18 @@
       const zapasLabel = document.getElementById(`zapas-label-${index}`);
       if (zapasLabel) zapasLabel.innerText = `${record.Zapas.toFixed(2)} m`;
       
+      // Podświetlanie rekordu po edycji (aktywacja z szarego na zielony) bez utraty focusu
+      const rowEl = document.getElementById(`record-row-${index}`);
+      if (rowEl && rowEl.classList.contains('bg-zinc-950/40')) {
+         rowEl.classList.remove('border-zinc-800/80', 'bg-zinc-950/40', 'hover:border-zinc-700');
+         rowEl.classList.add('border-emerald-500/30', 'bg-zinc-950', 'hover:border-emerald-500/50');
+         
+         const titleSpan = rowEl.querySelector('span.text-zinc-300');
+         if (titleSpan) {
+            titleSpan.className = 'font-extrabold text-xs text-emerald-400 tracking-wider uppercase';
+         }
+      }
+
       triggerAutoSave();
     }
 
@@ -1143,7 +1155,12 @@
             state.config = data.config;
             state.meters = data.meters || [];
             updateNetworkStatus(true);
-            renderApp();
+            
+            if (state.selectedInverter || state.selectedTrafo) {
+              smartMergeLocalEntries(false); // Wymusza scalenie i pełne odświeżenie formularza
+            } else {
+              renderApp();
+            }
           } else { showStatusMessage("Błąd pobierania danych", "error"); }
         })
         .catch(() => showStatusMessage("Pracujesz offline.", "error"))
