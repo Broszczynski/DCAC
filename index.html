@@ -258,8 +258,8 @@
     let pendingDeleteIndex = null;
     let autoSaveTimer = null;
     let backgroundSyncTimer = null;
-    let isSaving = false;          // Flaga oznaczająca czy aktualnie coś wysyłamy
-    let hasPendingSave = false;    // Flaga oznaczająca czy w trakcie wysyłania dopisano nowe dane
+    let isSaving = false;          
+    let hasPendingSave = false;    
 
     window.onload = function() {
       updateNetworkStatus();
@@ -276,14 +276,14 @@
       renderApp();
     };
 
+
     function startBackgroundSync() {
       if (backgroundSyncTimer) clearInterval(backgroundSyncTimer);
       backgroundSyncTimer = setInterval(() => {
-        // Tylko jeśli aktualnie nie jesteśmy w trakcie zapisywania/wpisywania
         if (state.apiUrl && !autoSaveTimer && !isSaving) {
           silentBackgroundFetch();
         }
-      }, 10000); // Co 10 sekund sprawdza zmiany innych ekip
+      }, 10000); 
     }
 
     function silentBackgroundFetch() {
@@ -295,9 +295,8 @@
             state.meters = data.meters || [];
             updateNetworkStatus(true);
             
-            // Jeśli monter jest obecnie w formularzu falownika, wklejamy dane innych ekip w tle
             if (state.selectedInverter || state.selectedTrafo) {
-              smartMergeLocalEntries(true); // preserveLocal = true chroni wpisywane właśnie dane!
+              smartMergeLocalEntries(true); 
             } else {
               renderApp();
             }
@@ -664,7 +663,7 @@
       state.editMode = false;
       state.isCompleted = isInverterCompleted(inverterName, "DC");
       updateToggleUI();
-      smartMergeLocalEntries(false); // false = pobieramy absolutnie od nowa (świeże wejście na falownik)
+      smartMergeLocalEntries(false); 
       renderApp();
     }
 
@@ -678,7 +677,6 @@
       renderApp();
     }
 
-    // Funkcja łącząca - preserveLocal chroni przed zamazaniem pisania
     function smartMergeLocalEntries(preserveLocal = false) {
       const isDC = state.selectedCableType === "DC";
       const activeInv = state.selectedInverter;
@@ -691,15 +689,12 @@
         return String(m.Trafostacja) === cleanTrafo;
       });
 
-      // Oddzielamy obce wpisy - one ZAWSZE są odświeżane z bazy
       let otherEntries = allExisting.filter(e => e.Team !== state.selectedTeam);
       let myEntries = [];
 
       if (preserveLocal && state.localEntries && state.localEntries.length > 0) {
-        // Zabezpieczenie przed Race Condition - ZACHOWUJEMY stan naszych aktualnie wpisywanych pół
         myEntries = state.localEntries.filter(e => e.Team === state.selectedTeam);
       } else {
-        // Standardowe generowanie i pobieranie
         myEntries = allExisting.filter(e => e.Team === state.selectedTeam);
 
         if (isDC && state.config.workMode === "Bębny") {
@@ -738,7 +733,12 @@
       combined.sort((a, b) => a.Team.localeCompare(b.Team));
       
       state.localEntries = combined;
-      safeRenderMonterForm();
+
+      // Zamiast renderować wszystko i tracić focus, 
+      // renderujemy tylko gdy to KONIECZNE (np. po wejściu na falownik, lub restarcie)
+      if (!preserveLocal) {
+        safeRenderMonterForm(true); 
+      }
     }
 
     function toggleCompletionStatus() {
@@ -770,7 +770,7 @@
 
     function toggleEditMode() {
       state.editMode = !state.editMode;
-      safeRenderMonterForm();
+      safeRenderMonterForm(true); // Przy zmianie trybu przebudowujemy formularz
     }
 
     function swapRecords(idx1, idx2) {
@@ -784,27 +784,14 @@
       state.localEntries[idx1].isEdited = true;
       state.localEntries[idx2].isEdited = true;
       
-      safeRenderMonterForm();
+      safeRenderMonterForm(true);
       triggerAutoSave();
     }
 
-    function safeRenderMonterForm() {
-      const activeEl = document.activeElement;
-      const activeId = activeEl ? activeEl.id : null;
-      let selectionStart = 0; let selectionEnd = 0;
-      
-      if (activeEl && activeEl.tagName === 'INPUT') {
-        try { selectionStart = activeEl.selectionStart; selectionEnd = activeEl.selectionEnd; } catch(e) {}
-      }
-
-      renderMonterFormContent();
-
-      if (activeId) {
-        const restoredEl = document.getElementById(activeId);
-        if (restoredEl) {
-          restoredEl.focus();
-          try { restoredEl.setSelectionRange(selectionStart, selectionEnd); } catch(e) {}
-        }
+    // Nowy parametr forceFullRender
+    function safeRenderMonterForm(forceFullRender = false) {
+      if (forceFullRender) {
+         renderMonterFormContent();
       }
     }
 
@@ -912,6 +899,9 @@
         const dis = isMyTeam ? '' : 'disabled';
         const inpCls = isMyTeam ? 'bg-zinc-900 border-zinc-800 focus:border-emerald-500 text-zinc-200' : 'bg-zinc-900/50 border-zinc-800 text-zinc-500 cursor-not-allowed';
 
+        // Zwykłe onfocus="this.select()" powraca.
+        // Formularz nie będzie się przebudowywał podczas wpisywania tekstu,
+        // więc nie będzie problemu z mruganiem i porywaniem zaznaczenia.
         if (state.selectedCableType === "DC" && state.config.workMode === "Bębny") {
           itemRow.innerHTML = `
             <div class="flex justify-between items-center pb-2 border-b border-zinc-900" id="record-header-${index}">
@@ -975,8 +965,6 @@
       if (autoSaveTimer) clearTimeout(autoSaveTimer);
       
       autoSaveTimer = setTimeout(() => {
-        // Blokada "Race Condition" - jeśli aktualnie coś już wysyłamy (trwa fetch),
-        // zaznaczamy, że mamy nowe dane w kolejce i kończymy. Zapis odpali się ponownie automatycznie na sam koniec.
         if (isSaving) {
           hasPendingSave = true;
           return;
@@ -1007,6 +995,7 @@
       }
     }
 
+    // Aktualizujemy TYLKO wyświetlane na ekranie labele, a nie cały formularz!
     function updateRecordField(index, fieldName, value) {
       const record = state.localEntries[index];
       if (record.Team !== state.selectedTeam) return; 
@@ -1027,6 +1016,7 @@
         record.Dlugosc_Bebna = 0; record.Zapas = 0;
       }
 
+      // Aktualizacja na żywo bez przeładowania HTML
       const zuzycieLabel = document.getElementById(`zuzycie-label-${index}`);
       if (zuzycieLabel) zuzycieLabel.innerText = `${record.Zuzycie.toFixed(2)} m`;
       const zapasLabel = document.getElementById(`zapas-label-${index}`);
@@ -1061,7 +1051,7 @@
         state.localEntries.push(newRecord);
       }
       
-      safeRenderMonterForm();
+      safeRenderMonterForm(true); // Dodanie wiersza wymusza pełny render
       triggerAutoSave();
     }
 
@@ -1085,7 +1075,7 @@
 
     function removeRecordRow(index) {
       state.localEntries.splice(index, 1);
-      safeRenderMonterForm();
+      safeRenderMonterForm(true); // Usunięcie wymusza render
       triggerAutoSave();
     }
 
@@ -1157,7 +1147,7 @@
     function silentSubmitMetersToServer() {
       if (!state.apiUrl) return;
 
-      isSaving = true; // Zaznaczamy flagę START ZAPISU
+      isSaving = true; 
       hasPendingSave = false; 
 
       const payloadDate = new Date().toLocaleString("pl-PL");
@@ -1200,14 +1190,13 @@
             state.config.completionStatus.AC[state.selectedTrafo] = state.isCompleted;
           }
           
-          smartMergeLocalEntries(true); // Parametr TRUE mówi: Zachowaj świeżo wpisywane dane w komórkach. Nie zmazuj ich!
+          smartMergeLocalEntries(true); 
           updateSyncUI('synced');
         } else updateSyncUI('error');
       })
       .catch(() => updateSyncUI('error'))
       .finally(() => {
-        isSaving = false; // Koniec zapisu
-        // Jeśli podczas 1-3 sekund zapisu użytkownik napisał "120" na klawiaturze... zapiszemy to natychmiast jeszcze raz!
+        isSaving = false; 
         if (hasPendingSave) {
           triggerAutoSave();
         }
