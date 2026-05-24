@@ -258,6 +258,8 @@
     let pendingDeleteIndex = null;
     let autoSaveTimer = null;
     let backgroundSyncTimer = null;
+    let isSaving = false;          // Flaga oznaczająca czy aktualnie coś wysyłamy
+    let hasPendingSave = false;    // Flaga oznaczająca czy w trakcie wysyłania dopisano nowe dane
 
     window.onload = function() {
       updateNetworkStatus();
@@ -268,7 +270,7 @@
         showStatusMessage("Wklej poprawny adres URL skryptu Google w ustawieniach.", "error");
         openSettingsModal();
       } else {
-        fetchData(true); // Initial fetch with blocking UI
+        fetchData(true); 
         startBackgroundSync();
       }
       renderApp();
@@ -278,7 +280,7 @@
       if (backgroundSyncTimer) clearInterval(backgroundSyncTimer);
       backgroundSyncTimer = setInterval(() => {
         // Tylko jeśli aktualnie nie jesteśmy w trakcie zapisywania/wpisywania
-        if (state.apiUrl && !autoSaveTimer) {
+        if (state.apiUrl && !autoSaveTimer && !isSaving) {
           silentBackgroundFetch();
         }
       }, 10000); // Co 10 sekund sprawdza zmiany innych ekip
@@ -295,9 +297,8 @@
             
             // Jeśli monter jest obecnie w formularzu falownika, wklejamy dane innych ekip w tle
             if (state.selectedInverter || state.selectedTrafo) {
-              smartMergeLocalEntries();
+              smartMergeLocalEntries(true); // preserveLocal = true chroni wpisywane właśnie dane!
             } else {
-              // W przeciwnym razie tylko odświeżamy kafelki w menu
               renderApp();
             }
           }
@@ -335,7 +336,7 @@
         renderInverterSelection();
       } else {
         showView('view-step-monter-form');
-        safeRenderMonterForm(); // safe render to keep focus!
+        safeRenderMonterForm(); 
       }
     }
 
@@ -663,74 +664,77 @@
       state.editMode = false;
       state.isCompleted = isInverterCompleted(inverterName, "DC");
       updateToggleUI();
-      smartMergeLocalEntries(); // Wczytuje dane zespołów pogrupowane
+      smartMergeLocalEntries(false); // false = pobieramy absolutnie od nowa (świeże wejście na falownik)
       renderApp();
     }
 
     function selectTrafoAC(trafoName) {
       state.selectedTrafo = trafoName;
-      state.activeTrafo = trafoName; // keep sync
+      state.activeTrafo = trafoName; 
       state.editMode = false;
       state.isCompleted = isTrafoCompletedAC(trafoName);
       updateToggleUI();
-      smartMergeLocalEntries();
+      smartMergeLocalEntries(false);
       renderApp();
     }
 
-    // Funkcja pobierająca z bazy rekordy własne ORAZ od innych zespołów
-    function smartMergeLocalEntries() {
+    // Funkcja łącząca - preserveLocal chroni przed zamazaniem pisania
+    function smartMergeLocalEntries(preserveLocal = false) {
       const isDC = state.selectedCableType === "DC";
       const activeInv = state.selectedInverter;
       const cleanTrafo = state.activeTrafo ? state.activeTrafo.replace(/[^0-9]/g, "") : "1";
       const myTeamNum = state.selectedTeam.replace(/\D/g, '') || "1";
 
-      // 1. Zlokalizuj wszystkie istniejące pomiary dla danego sprzętu i typu
       let allExisting = state.meters.filter(m => {
         if (getCableType(m) !== state.selectedCableType) return false;
         if (isDC) return m.Falownik_WR === activeInv;
         return String(m.Trafostacja) === cleanTrafo;
       });
 
-      // 2. Oddzielamy nasze wpisy od obcych wpisów
-      let myEntries = allExisting.filter(e => e.Team === state.selectedTeam);
+      // Oddzielamy obce wpisy - one ZAWSZE są odświeżane z bazy
       let otherEntries = allExisting.filter(e => e.Team !== state.selectedTeam);
+      let myEntries = [];
 
-      // 3. Sprawdzamy czy musimy wygenerować wpisy dla NASZEGO teamu
-      if (isDC && state.config.workMode === "Bębny") {
-        if (myEntries.length === 0) {
-          myEntries.push(createEmptyRecord(`Bęben #1/${myTeamNum}`, 500));
-        }
-      } else if (isDC && state.config.workMode !== "Bębny") { // Stringi
-        const strCount = state.config.stringsCount || 12;
-        let generatedStrings = [];
-        for (let s = 1; s <= strCount; s++) {
-          const label = `String #${s}/${myTeamNum}`;
-          const found = myEntries.find(e => e.Numer_Bębna_Stringu === label);
-          if (found) { generatedStrings.push(found); } 
-          else { generatedStrings.push(createEmptyRecord(label, 0)); }
-        }
-        myEntries = generatedStrings;
-      } else if (!isDC) { // Kable AC (1 wpis per falownik dla mojego teamu)
-        const wrCount = state.config.trafos[state.activeTrafo] || 12;
-        let generatedAC = [];
-        for (let j = 1; j <= wrCount; j++) {
-          const invName = `WR ${cleanTrafo}.${j}`;
-          const label = `Kabel AC/${myTeamNum}`;
-          const found = myEntries.find(e => e.Falownik_WR === invName);
-          if (found) { generatedAC.push(found); }
-          else {
-            let acRecord = createEmptyRecord(label, 0);
-            acRecord.Falownik_WR = invName;
-            generatedAC.push(acRecord);
+      if (preserveLocal && state.localEntries && state.localEntries.length > 0) {
+        // Zabezpieczenie przed Race Condition - ZACHOWUJEMY stan naszych aktualnie wpisywanych pół
+        myEntries = state.localEntries.filter(e => e.Team === state.selectedTeam);
+      } else {
+        // Standardowe generowanie i pobieranie
+        myEntries = allExisting.filter(e => e.Team === state.selectedTeam);
+
+        if (isDC && state.config.workMode === "Bębny") {
+          if (myEntries.length === 0) {
+            myEntries.push(createEmptyRecord(`Bęben #1/${myTeamNum}`, 500));
           }
+        } else if (isDC && state.config.workMode !== "Bębny") { 
+          const strCount = state.config.stringsCount || 12;
+          let generatedStrings = [];
+          for (let s = 1; s <= strCount; s++) {
+            const label = `String #${s}/${myTeamNum}`;
+            const found = myEntries.find(e => e.Numer_Bębna_Stringu === label);
+            if (found) { generatedStrings.push(found); } 
+            else { generatedStrings.push(createEmptyRecord(label, 0)); }
+          }
+          myEntries = generatedStrings;
+        } else if (!isDC) { 
+          const wrCount = state.config.trafos[state.activeTrafo] || 12;
+          let generatedAC = [];
+          for (let j = 1; j <= wrCount; j++) {
+            const invName = `WR ${cleanTrafo}.${j}`;
+            const label = `Kabel AC/${myTeamNum}`;
+            const found = myEntries.find(e => e.Falownik_WR === invName);
+            if (found) { generatedAC.push(found); }
+            else {
+              let acRecord = createEmptyRecord(label, 0);
+              acRecord.Falownik_WR = invName;
+              generatedAC.push(acRecord);
+            }
+          }
+          myEntries = generatedAC;
         }
-        myEntries = generatedAC;
       }
 
-      // 4. Sklejamy z powrotem. Obce ekipy po prostu dodajemy tak jak przyszły z bazy
       let combined = [...myEntries, ...otherEntries];
-      
-      // 5. Grupujemy wyniki zespołami, a wewnątrz zespołów zachowujemy dotychczasową kolejność
       combined.sort((a, b) => a.Team.localeCompare(b.Team));
       
       state.localEntries = combined;
@@ -742,7 +746,7 @@
       state.localEntries.forEach(entry => {
         if (entry.Team === state.selectedTeam) {
           entry.Zakonczono = state.isCompleted;
-          entry.isEdited = true; // Zaznaczenie do wymuszenia zapisu w tle
+          entry.isEdited = true;
         }
       });
       updateToggleUI();
@@ -771,8 +775,6 @@
 
     function swapRecords(idx1, idx2) {
       if (idx1 < 0 || idx1 >= state.localEntries.length || idx2 < 0 || idx2 >= state.localEntries.length) return;
-      
-      // Blokada zamiany między różnymi zespołami
       if (state.localEntries[idx1].Team !== state.localEntries[idx2].Team) return; 
 
       const temp = state.localEntries[idx1];
@@ -786,7 +788,6 @@
       triggerAutoSave();
     }
 
-    // Bezpieczne generowanie widoku bez tracenia focusu z aktualnie klikniętego pola input!
     function safeRenderMonterForm() {
       const activeEl = document.activeElement;
       const activeId = activeEl ? activeEl.id : null;
@@ -843,7 +844,6 @@
         
         const rowLabel = state.selectedCableType === "DC" ? entry.Numer_Bębna_Stringu : entry.Falownik_WR;
 
-        // Blokady dla przycisków
         const editBtnHTML = isMyTeam ? `
           <button type="button" onclick="toggleEditMode()" class="w-7 h-7 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-amber-400 rounded-lg flex items-center justify-center transition-all ${state.editMode ? 'bg-amber-500/25 border-amber-500 text-amber-400 shadow-amber-glow animate-pulse' : ''}">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
@@ -868,7 +868,7 @@
             </div>
           `;
         } else if (!isMyTeam) {
-          borderClass = "border-zinc-800/80 bg-zinc-900/50 hover:border-zinc-700 opacity-90"; // Styl dla innych teamów
+          borderClass = "border-zinc-800/80 bg-zinc-900/50 hover:border-zinc-700 opacity-90";
           headerHTML = `
             <div class="flex items-center gap-2 flex-wrap">
               <span class="font-extrabold text-xs text-zinc-400 tracking-wider uppercase">${rowLabel}</span>
@@ -970,12 +970,17 @@
       });
     }
 
-    // AUTO-SAVE LOGIC
     function triggerAutoSave() {
       updateSyncUI('saving');
       if (autoSaveTimer) clearTimeout(autoSaveTimer);
-      // Odczeka 1,5s od ostatniego kliknięcia
+      
       autoSaveTimer = setTimeout(() => {
+        // Blokada "Race Condition" - jeśli aktualnie coś już wysyłamy (trwa fetch),
+        // zaznaczamy, że mamy nowe dane w kolejce i kończymy. Zapis odpali się ponownie automatycznie na sam koniec.
+        if (isSaving) {
+          hasPendingSave = true;
+          return;
+        }
         silentSubmitMetersToServer();
       }, 1500); 
     }
@@ -1004,7 +1009,7 @@
 
     function updateRecordField(index, fieldName, value) {
       const record = state.localEntries[index];
-      if (record.Team !== state.selectedTeam) return; // Zabezpieczenie przed edycją cudzych
+      if (record.Team !== state.selectedTeam) return; 
       
       if (fieldName === 'Numer_Bębna_Stringu' || fieldName === 'Falownik_WR') record[fieldName] = value;
       else record[fieldName] = parseFloat(value) || 0;
@@ -1027,14 +1032,12 @@
       const zapasLabel = document.getElementById(`zapas-label-${index}`);
       if (zapasLabel) zapasLabel.innerText = `${record.Zapas.toFixed(2)} m`;
       
-      // Auto-save triggers
       triggerAutoSave();
     }
 
     function addNewRecordRow() {
       const teamNum = state.selectedTeam.replace(/\D/g, '') || "1";
       
-      // Obliczanie poprawnego numeru kolejnego bębna tylko dla danego zespołu
       let maxNum = 0;
       let lastIndexForTeam = -1;
       state.localEntries.forEach((e, idx) => {
@@ -1052,7 +1055,6 @@
       const newRecord = createEmptyRecord(`Bęben #${nextNum}/${teamNum}`, 500);
       newRecord.isEdited = true; 
 
-      // Wstaw na koniec sekcji zespołu, aby uniknąć rozsypania
       if (lastIndexForTeam !== -1) {
         state.localEntries.splice(lastIndexForTeam + 1, 0, newRecord);
       } else {
@@ -1152,13 +1154,14 @@
         .finally(() => { if (showBlocker) showLoading(false); });
     }
 
-    // Nowa, dyskretna i całkowicie oddzielona od obcych danych metoda zapisu
     function silentSubmitMetersToServer() {
       if (!state.apiUrl) return;
 
+      isSaving = true; // Zaznaczamy flagę START ZAPISU
+      hasPendingSave = false; 
+
       const payloadDate = new Date().toLocaleString("pl-PL");
       
-      // Wyślij TYLKO wpisy dotyczące ZESPOŁU zalogowanego (inne olewamy przy zapisie!)
       const activeEntries = state.localEntries.filter(e => 
         e.Team === state.selectedTeam && 
         (e.isEdited || (parseFloat(e.Zuzycie) || 0) > 0 || (parseFloat(e.Odczyt_Start) || 0) > 0 || (parseFloat(e.Odczyt_Koniec) || 0) > 0)
@@ -1186,7 +1189,7 @@
       .then(data => {
         if (data.status === "success") {
           autoSaveTimer = null;
-          state.meters = data.meters || []; // Backend od razu przesyła WSZYSTKICH po złączeniu
+          state.meters = data.meters || []; 
           if (!state.config.completionStatus) state.config.completionStatus = { DC: {}, AC: {} };
           
           if (state.selectedCableType === "DC") {
@@ -1197,14 +1200,20 @@
             state.config.completionStatus.AC[state.selectedTrafo] = state.isCompleted;
           }
           
-          smartMergeLocalEntries(); // Połącz nowości od innych teamów z Twoim ekranem
+          smartMergeLocalEntries(true); // Parametr TRUE mówi: Zachowaj świeżo wpisywane dane w komórkach. Nie zmazuj ich!
           updateSyncUI('synced');
         } else updateSyncUI('error');
       })
-      .catch(() => updateSyncUI('error'));
+      .catch(() => updateSyncUI('error'))
+      .finally(() => {
+        isSaving = false; // Koniec zapisu
+        // Jeśli podczas 1-3 sekund zapisu użytkownik napisał "120" na klawiaturze... zapiszemy to natychmiast jeszcze raz!
+        if (hasPendingSave) {
+          triggerAutoSave();
+        }
+      });
     }
 
-    // Przycisk wymuszenia dla tych, którzy boją się zamknąć przed potwierdzeniem chmury :) 
     function submitMetersToServer() { triggerAutoSave(); }
 
     function triggerFactoryReset() {
